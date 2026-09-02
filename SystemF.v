@@ -165,6 +165,10 @@ Module Syntax.
   Module TypingContext.
     Definition t: Type := list TypeTerm.t.
 
+    Definition empty: t := [].
+
+    Definition bind: t -> TypeTerm.t -> t := λ Γ T, T :: Γ.
+
     Fixpoint lookup (Γ: t) (d: nat): option TypeTerm.t :=
       match Γ with
       | [] => None
@@ -214,8 +218,8 @@ Module Typing.
   Inductive typing_rule: TypeVarContext.t -> TypingContext.t -> Term.t -> TypeTerm.t -> Prop :=
   | TRVar : ∀ Δ Γ x T, TypingContext.lookup Γ x = Some T -> typing_rule Δ Γ (Term.Var x) T
   | TRAbs : ∀ Δ Γ T M U,
-      TypeVarContext.wf_type  Δ T ->
-      typing_rule Δ (T :: Γ) M U ->
+      TypeVarContext.wf_type Δ T ->
+      typing_rule Δ (TypingContext.bind Γ T) M U ->
       typing_rule Δ Γ (Term.Abs T M) (TypeTerm.TArrow T U)
   | TRApp : ∀ Δ Γ M N T U,
       typing_rule Δ Γ M (TypeTerm.TArrow T U) ->
@@ -243,7 +247,7 @@ Module Typing.
       + apply IH with (x := Init.Nat.pred x). trivial.
   Qed.
 
-  Lemma typing_closed : forall Δ Γ M T, has_type Δ Γ M T -> TypeVarContext.wf_type Δ T.
+  Lemma typing_closed : ∀ Δ Γ M T, has_type Δ Γ M T -> TypeVarContext.wf_type Δ T.
   Proof.
     intros Δ Γ M T [Hty Hwf]. revert Hwf.
     induction Hty; intros Hwf.
@@ -265,95 +269,70 @@ Import Syntax.
 Import Semantics.
 Import Typing.
 
-Lemma weakening : forall Δ Γ M T W, Δ ; Γ ⊢ M : T ->
-                                                    TypeVarContext.wf_type Δ W ->
-                                                    Δ ; (W :: Γ) ⊢ (Term.shift_tm 0 1 M) : T.
-Proof.
-  admit.
-Qed.
-
-Lemma canonical_arrow : forall M T1 T2,
+Lemma canonical_arrow : ∀ M T1 T2,
   Term.value M ->
-  (TypeVarContext.empty ; TypingContext.Empty ⊢ M : (TypeTerm.TArrow T1 T2)) ->
+  (TypeVarContext.empty ; TypingContext.empty ⊢ M : (TypeTerm.TArrow T1 T2)) ->
   exists N, M = Term.Abs T1 N.
 Proof.
   intros M T1 T2 Hv [Hty Hwf]. inversion Hv; subst; inversion Hty; subst.
   - exists M0. reflexivity.
 Qed.
 
-Lemma canonical_all : forall M S,
+Lemma canonical_all : ∀ M S,
   Term.value M ->
-  (TypeVarContext.empty ; TypingContext.Empty ⊢ M : (TypeTerm.TAll S)) ->
+  (TypeVarContext.empty ; TypingContext.empty ⊢ M : (TypeTerm.TAll S)) ->
   exists N, M = Term.TAbs N.
 Proof.
   intros M A Hv [Hty Hwf]. inversion Hv; subst; inversion Hty; subst.
   - exists M0. reflexivity.
 Qed.
 
-Theorem progress: forall M T,
-  (TypeVarContext.empty ; TypingContext.Empty ⊢ M : T) ->
-  Term.value M \/ exists M', eval M M'.
+Theorem progress: ∀ M T, (TypeVarContext.empty ; TypingContext.empty ⊢ M : T) -> Term.value M \/ exists M', eval M M'.
 Proof.
   intro M. induction M; intros T H; destruct H as [Hty Hwf].
-  - inversion Hty; subst.
-    match goal with [ H : TypingContext.lookup _ _ _ |- _ ] => inversion H end.
+  - inversion Hty; subst. inversion H2; subst.
   - left. apply Term.VAbs.
   - right. inversion Hty; subst.
-    assert (HM1 : TypeVarContext.empty ; TypingContext.Empty ⊢ M1 : (TypeTerm.TArrow T0 T)).
+    assert (HM1 : TypeVarContext.empty ; TypingContext.empty ⊢ M1 : (TypeTerm.TArrow T0 T)).
     { split; assumption. }
-    assert (HM2 : TypeVarContext.empty ; TypingContext.Empty ⊢ M2 : T0).
+    assert (HM2 : TypeVarContext.empty ; TypingContext.empty ⊢ M2 : T0).
     { split; assumption. }
-    destruct (IHM1 _ HM1) as [Hval1 | [N1 Hstep1]].
-    + destruct (IHM2 _ HM2) as [Hval2 | [N2 Hstep2]].
-      * destruct (canonical_arrow M1 T0 T Hval1 HM1) as [P Heq]. subst M1.
-        exists (Term.subst_tm_top M2 P). apply EAppAbs. assumption.
-      * exists (Term.App M1 N2). apply EApp2; assumption.
-    + exists (Term.App N1 M2). apply EApp1. assumption.
+    specialize (IHM1 (TypeTerm.TArrow T0 T) HM1). specialize (IHM2 T0 HM2).
+    destruct IHM1. destruct IHM2.
+    + specialize (canonical_arrow M1 T0 T H HM1). intro. destruct H1; subst. exists (Term.subst_tm_top M2 x). apply EAppAbs. trivial.
+    + destruct H0; subst. exists (Term.App M1 x). apply EApp2. trivial. trivial.
+    + destruct H; subst. exists (Term.App x M2). apply EApp1. trivial. 
   - left. apply Term.VTAbs.
   - right. inversion Hty; subst.
-    assert (HM : TypeVarContext.empty ; TypingContext.Empty ⊢ M : (TypeTerm.TAll T0)).
+    assert (Htyp : TypeVarContext.empty; TypingContext.empty ⊢ M : (TypeTerm.TAll T0)).
     { split; assumption. }
-    destruct (IHM _ HM) as [Hval | [N Hstep]].
-    + destruct (canonical_all M T0 Hval HM) as [P Heq]. subst M.
-      exists (Term.subst_ty_top t P). apply ETAppTAbs.
-    + exists (Term.TApp N t). apply ETApp. assumption.
+    specialize (IHM (TypeTerm.TAll T0) Htyp). destruct IHM.
+    + specialize (canonical_all M T0 H Htyp). intro. destruct H0; subst. exists (Term.subst_ty_top t x). apply ETAppTAbs.
+    + destruct H; subst. exists (Term.TApp x t). apply ETApp. trivial.
 Qed.
 
-Theorem subject_reduction : forall Δ Γ M M' T,
-  Δ ; Γ ⊢ M : T -> eval M M' -> Δ ; Γ ⊢ M' : T.
+Lemma substitution :
+  ∀ Δ Γ U T V M, Δ ; (TypingContext.bind Γ U) ⊢ M : T -> Δ; Γ ⊢ V : U -> Δ; Γ ⊢ (Term.subst_tm_top V M) : T.
 Proof.
-  intros Δ Γ M M' T [Hty Hwf] Hev. revert Δ Γ T Hty Hwf.
-  induction Hev; intros Δ Γ R Hty Hwf; inversion Hty; subst.
-  (* EApp1 *)
-  - match goal with
-    | [ Hf : typing_rule _ _ M (TypeTerm.TArrow ?S _) |- _ ] =>
-        destruct (IHHev Δ Γ (TypeTerm.TArrow S R) Hf Hwf) as [HM' _]
-    end.
-    split; [eapply TRApp; eassumption | assumption].
-  (* EApp2 *)
-  - match goal with
-    | [ Ha : typing_rule _ _ N ?S |- _ ] =>
-        destruct (IHHev Δ Γ S Ha Hwf) as [HN' _]
-    end.
-    split; [eapply TRApp; eassumption | assumption].
-  (* EAppAbs: invert the TRAbs derivation and use term substitution *)
-  - match goal with
-    | [ Hf : typing_rule _ _ (Term.Abs T M) _ |- _ ] => inversion Hf; subst
-    end.
-    eapply substitution_term.
-    + split; [eassumption |]. apply TypingContext.WfBinding; eassumption.
-    + split; eassumption.
-  (* ETApp *)
-  - match goal with
-    | [ Hp : typing_rule _ _ M (TypeTerm.TAll ?S) |- _ ] =>
-        destruct (IHHev Δ Γ (TypeTerm.TAll S) Hp Hwf) as [HM' _]
-    end.
-    split; [apply TRTApp; assumption | assumption].
-  (* ETAppTAbs: invert the TRTAbs derivation and use type substitution *)
-  - match goal with
-    | [ Hp : typing_rule _ _ (Term.TAbs M) _ |- _ ] => inversion Hp; subst
-    end.
-    split; [| assumption].
-    apply substitution_type; assumption.
+  intros. split.
+  - induction M.
+    +
+Qed.
+                                         
+Theorem subject_reduction : ∀ Δ Γ M N T,
+    Δ ; Γ ⊢ M : T -> eval M N -> Δ ; Γ ⊢ N : T.
+Proof.
+  intros Δ Γ M N T H. generalize N. inversion H; subst. induction H0.
+  - intros. inversion H2; subst.
+  - intros. inversion H3; subst.
+  - intros.
+    assert ( Δ; Γ ⊢ M : (TypeTerm.TArrow T U) ). { split; assumption. }
+    assert ( Δ; Γ ⊢ N0 : T). { split; assumption. }
+    inversion H0; subst.
+    + specialize (IHtyping_rule1 H2 H1 M' H7). inversion IHtyping_rule1; subst.      
+      specialize (TRApp Δ Γ M' N0 T U H4 H0_0). intro. assert (Δ; Γ ⊢ (Term.App M' N0) : U). { split; assumption. } trivial.
+    + specialize (IHtyping_rule2 H3 H1 N' H8). inversion IHtyping_rule2; subst.
+      specialize (TRApp Δ Γ M N' T U H0_ H4). intro. assert (Δ; Γ ⊢ (Term.App M N') : U). { split; assumption. } trivial.
+    + inversion H; subst. inversion H4; subst. inversion H11; subst.
 Qed.
 
