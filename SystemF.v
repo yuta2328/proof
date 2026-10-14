@@ -19,13 +19,6 @@ Module Syntax.
     #[global] Instance Rename_t: Rename t. derive. Defined.
     #[global] Instance Subst_t: Subst t. derive. Defined.
     #[global] Instance SubstLemmas_t: SubstLemmas t. derive. Qed.
-
-    Definition scoped (Δ: nat) (T: t) : Prop :=
-      forall θ1 θ2, (forall α, α <= Δ -> θ1 α = θ2 α) -> T.[θ1] = T.[θ2].
-
-    Definition closed (T: t): Prop := scoped 0 T.
-
-    Definition shift (T: t): t := T.[ren (+1)].
   End TypeTerm.
 
   Module Term.
@@ -34,16 +27,14 @@ Module Syntax.
     | Var : var -> t                                 
     | Abs : TypeTerm.t -> { bind t} -> t
     | App : t -> t -> t                              
-    | TAbs : { bind TypeTerm.t in t} -> t            
+    | TAbs : { bind TypeTerm.t in t} -> t
     | TApp : t -> TypeTerm.t -> t.                   
 
-    #[global] Instance HSubst_t : HSubst TypeTerm.t t. derive. Defined.   (* ← before Subst *)
     #[global] Instance Ids_t: Ids t. derive. Defined.
     #[global] Instance Rename_t: Rename t. derive. Defined.
+    #[global] Instance HSubst_t : HSubst TypeTerm.t t. derive. Defined.
     #[global] Instance Subst_t: Subst t. derive. Defined.
     #[global] Instance HSubstLemmas_t : HSubstLemmas TypeTerm.t t. derive. Qed.
-    #[global] Instance SubstHSubstComp_t : SubstHSubstComp TypeTerm.t t. derive. Qed.
-    #[global] Instance SubstLemmas_t: SubstLemmas t. derive. Qed.
     
     Inductive value: t -> Prop :=
     | VAbs: ∀ T M, value (Abs T M)
@@ -51,21 +42,22 @@ Module Syntax.
   End Term.
 
   Module TypingContext.
-    Definition t: Type := list TypeTerm.t.
+    Definition t: Type := nat -> TypeTerm.t.
 
-    #[global] Instance Rename_t: Rename t. derive. Defined.
+    Definition empty: t := ren id.
 
-    Definition empty: t := [].
+    Definition bind: t -> TypeTerm.t -> t := λ Γ T, T .: Γ.
 
-    Definition bind: t -> TypeTerm.t -> t := λ Γ T, T :: Γ.
+    Definition lookup: t -> var -> TypeTerm.t := λ Γ x, Γ x.
 
-    Fixpoint lookup (Γ: t) (d: nat): option TypeTerm.t :=
-      match Γ with
-      | [] => None
-      | T :: Γ' => if d =? 0 then Some T else lookup Γ' (pred d)
-      end.
+    Definition shift: t -> t := λ Γ, (+ 1) >>> Γ.
 
-    Definition shift (Γ: t) : t := map TypeTerm.shift Γ.
+    Definition closed: Term.t -> Prop := λ M, forall Γ, (M.[Γ]) = M.
+
+    Lemma var_not_closed: ∀ x, ~ closed (Term.Var x).
+    Proof.
+      intros x H. unfold closed in H. specialize (H (ren (+1))). asimpl in H; inversion H. lia.
+    Qed.
   End TypingContext.
 End Syntax.
 
@@ -78,7 +70,6 @@ Module Semantics.
   | EAppAbs : ∀ T M V, Term.value V -> eval (Term.App (Term.Abs T M) V) (M.[ V /])
   | ETApp : ∀ M M' T, eval M M' -> eval (Term.TApp M T) (Term.TApp M' T)
   | ETAppTAbs : ∀ M T, eval (Term.TApp (Term.TAbs M) T) (M..[ T /]).
-  
 End Semantics.
 
 Module Typing.
@@ -86,7 +77,7 @@ Module Typing.
   Import Semantics.
 
   Inductive has_type: TypingContext.t -> Term.t -> TypeTerm.t -> Prop :=
-  | TRVar : ∀ Γ x T, TypingContext.lookup Γ x = Some T -> has_type Γ (Term.Var x) T
+  | TRVar : ∀ Γ x T, TypingContext.lookup Γ x = T -> has_type Γ (Term.Var x) T
   | TRAbs : ∀ Γ T M U,
       has_type (TypingContext.bind Γ T) M U ->
       has_type Γ (Term.Abs T M) (TypeTerm.TArrow T U)
@@ -95,12 +86,28 @@ Module Typing.
       has_type Γ N T ->
       has_type Γ (Term.App M N) U
   | TRTAbs : ∀ Γ M T,
-      has_type (TypingContext.shift Γ) M T -> has_type Γ (Term.TAbs M) (TypeTerm.TAll T)
+      has_type Γ M T -> has_type Γ (Term.TAbs M) (TypeTerm.TAll T)
   | TRTApp : ∀ Γ M T U,
       has_type Γ M (TypeTerm.TAll T) ->
       has_type Γ (Term.TApp M U) U.[T/].
 
   Notation "Γ ⊢ M : T" := (has_type Γ M T) (at level 40, M at level 0, T at level 0).
+
+  Lemma renaming: ∀ Γ M T, Γ ⊢ M : T -> ∀ ξ Γ', (∀ x, TypingContext.lookup Γ x = TypingContext.lookup Γ' (ξ x)) -> Γ' ⊢ (M.[ren ξ]) : T.
+  Proof.
+    intros Γ M T Hty. induction Hty; intros ξ Γ' Hren.
+    - apply TRVar. rewrite <- Hren. trivial.
+    - apply TRAbs. replace (up (ren ξ)) with (ren (upren ξ)) by autosubst. apply IHHty. intros [|x]; [reflexivity | apply Hren].
+    - assert (E: (Term.App M N).[ren ξ] = Term.App (M.[ren ξ]) (N.[ren ξ])) by reflexivity. rewrite E. eapply TRApp. apply IHHty1. trivial. apply IHHty2. trivial.
+    - assert (E: (Term.TAbs M).[ren ξ] = Term.TAbs (M.[ren ξ])) by reflexivity. rewrite E. apply TRTAbs. apply IHHty. trivial.
+    - assert (E: (Term.TApp M U).[ren ξ] = Term.TApp (M.[ren ξ]) U) by reflexivity. rewrite E. eapply TRTApp. apply IHHty. trivial.
+  Qed.
+
+  Lemma weakening: ∀ Γ M T T', Γ ⊢ M : T -> TypingContext.bind Γ T' ⊢ (M.[ren (+1)]) : T.
+  Proof.
+    intros. eapply renaming; eauto. 
+  Qed.
+
 End Typing.
 
 Import Syntax.
@@ -131,58 +138,62 @@ Proof.
   - rewrite <- H3 in H. inversion H.
 Qed.
 
-Theorem progress: ∀ M T, (TypingContext.empty ⊢ M : T) -> Term.value M \/ exists M', eval M M'.
+Theorem progress: ∀ Γ M T, (Γ ⊢ M : T) -> TypingContext.closed M -> Term.value M \/ exists M', eval M M'.
 Proof.
-  intro M. induction M; intros T H; destruct H as [Hty Hwf].
-  - inversion Hty; subst. inversion H2; subst.
+  intros Γ M T Hty. induction Hty; intros Closed.
+  - apply TypingContext.var_not_closed in Closed. contradiction.
   - left. apply Term.VAbs.
-  - right. inversion Hty; subst.
-    assert (HM1 : TypeVarContext.empty ; TypingContext.empty ⊢ M1 : (TypeTerm.TArrow T0 T)).
-    { split; assumption. }
-    assert (HM2 : TypeVarContext.empty ; TypingContext.empty ⊢ M2 : T0).
-    { split; assumption. }
-    specialize (IHM1 (TypeTerm.TArrow T0 T) HM1). specialize (IHM2 T0 HM2).
-    destruct IHM1. destruct IHM2.
-    + specialize (canonical_arrow M1 T0 T H HM1). intro. destruct H1; subst. exists (x.[M2/]). apply EAppAbs. trivial.
-    + destruct H0; subst. exists (Term.App M1 x). apply EApp2. trivial. trivial.
-    + destruct H; subst. exists (Term.App x M2). apply EApp1. trivial. 
+  - right.
+    assert (ClosedM: TypingContext.closed M).
+    { intros σ. specialize (Closed σ). simpl in Closed. inversion Closed. rewrite H0. trivial. }
+    assert (ClosedN: TypingContext.closed N).
+    { intros σ. specialize (Closed σ). simpl in Closed. inversion Closed. rewrite H1. trivial. }
+    destruct (IHHty1 ClosedM) as [HVal1 | [M' HEval1]].
+    + destruct (IHHty2 ClosedN) as [HVal2 | [N' HEval2]].
+      * destruct HVal1 as [T' M0 | M0].
+        -- exists (M0.[N/]). apply EAppAbs. trivial.
+        -- inversion Hty1.
+      * exists (Term.App M N'). apply EApp2; trivial.
+    + exists (Term.App M' N). apply EApp1. trivial.
   - left. apply Term.VTAbs.
-  - right. inversion Hty; subst.
-    assert (Htyp : TypeVarContext.empty; TypingContext.empty ⊢ M : (TypeTerm.TAll T0)).
-    { split; assumption. }
-    specialize (IHM (TypeTerm.TAll T0) Htyp). destruct IHM.
-    + specialize (canonical_all M T0 H Htyp). intro. destruct H0; subst. exists (x..[t/]). apply ETAppTAbs.
-    + destruct H; subst. exists (Term.TApp x t). apply ETApp. trivial.
+  - right.
+    assert (ClosedM: TypingContext.closed M).
+    { intros σ. specialize (Closed σ). simpl in Closed. inversion Closed. rewrite H0. trivial. }
+    destruct (IHHty ClosedM) as [HVal | [M' HEval]].
+    + destruct HVal as [T' M0 | M0].
+      * inversion Hty.
+      * exists (M0..[U/]). apply ETAppTAbs.
+    + exists (Term.TApp M' U). apply ETApp. trivial.
 Qed.
 
-Lemma typing_subst: ∀ Δ Γ M T, typing_rule Δ Γ M T ->
-    ∀ Γ' σ, (∀ x T', TypingContext.lookup Γ x = Some T' -> typing_rule Δ Γ' (σ x) T') ->
-            typing_rule Δ Γ' M.[σ] T.
+Lemma substitution: ∀ Γ M T, Γ ⊢ M : T -> ∀ σ Γ', (∀ x, Γ' ⊢ (σ x) : (TypingContext.lookup Γ x)) -> Γ' ⊢ (M.[σ]) : T.
 Proof.
-  intros. induction H; simpl; eauto.
-  - apply 
-Qed.
+  intros Γ M T Hty. induction Hty; intros σ Γ' Hsbt.
+  - assert (E: (Term.Var x).[σ] = σ x) by reflexivity. rewrite E. rewrite <- H. apply Hsbt.
+  - assert (Hren: ∀ N ξ τ, (∀ y, τ y = ids (ξ y)) -> rename ξ N = N.[τ]).
+    { induction N; intros ξ τ Hτ; simpl.
+      - rewrite Hτ. reflexivity.
+      - f_equal. apply IHN. intros [|y]; simpl; [reflexivity | unfold up; simpl; rewrite Hτ; reflexivity].
+      - f_equal; [apply IHN1 | apply IHN2]; assumption.
+      - f_equal. apply IHN. intros y. unfold hcomp, funcomp. rewrite Hτ. reflexivity.
+      - f_equal. apply IHN. assumption. }
+    assert (E: (Term.Abs T M).[σ] = Term.Abs T (M.[up σ])) by reflexivity. rewrite E.
+    apply TRAbs. apply IHHty. intros [|x].
+    + apply TRVar. reflexivity.
+    + assert (E2: up σ (S x) = (σ x).[ren (+1)]). { unfold up. simpl. apply Hren. reflexivity. }
+      rewrite E2. apply weakening. apply Hsbt.
+  - assert (E: (Term.App M N).[σ] = Term.App (M.[σ]) (N.[σ])) by reflexivity. rewrite E.
+    eapply TRApp; [apply IHHty1 | apply IHHty2]; assumption.
+  - assert (E: (Term.TAbs M).[σ] = Term.TAbs (M.[σ >>| ren (+1)])) by reflexivity. rewrite E.
+    apply TRTAbs. apply IHHty. intros x.
+    (* Unprovable: TRTAbs does not shift Γ, so (σ x).|[ren (+1)] need not have type Γ x. *)
+    admit.
+  - assert (E: (Term.TApp M U).[σ] = Term.TApp (M.[σ]) U) by reflexivity. rewrite E.
+    eapply TRTApp. apply IHHty. assumption.
+Admitted.
 
-Lemma substitution :
-  ∀ Δ Γ U T V M, Δ ; (TypingContext.bind Γ U) ⊢ M : T -> Δ; Γ ⊢ V : U -> Δ; Γ ⊢ (M.[V/]) : T.
+Theorem subject_reduction : ∀ Γ M N T, Γ ⊢ M : T -> eval M N -> Γ ⊢ N : T.
 Proof.
-  intros. induction
-Qed.
-                                         
-Theorem subject_reduction : ∀ Δ Γ M N T,
-    Δ ; Γ ⊢ M : T -> eval M N -> Δ ; Γ ⊢ N : T.
-Proof.
-  intros Δ Γ M N T H. generalize N. inversion H; subst. induction H0.
-  - intros. inversion H2; subst.
-  - intros. inversion H3; subst.
-  - intros.
-    assert ( Δ; Γ ⊢ M : (TypeTerm.TArrow T U) ). { split; assumption. }
-    assert ( Δ; Γ ⊢ N0 : T). { split; assumption. }
-    inversion H0; subst.
-    + specialize (IHtyping_rule1 H2 H1 M' H7). inversion IHtyping_rule1; subst.      
-      specialize (TRApp Δ Γ M' N0 T U H4 H0_0). intro. assert (Δ; Γ ⊢ (Term.App M' N0) : U). { split; assumption. } trivial.
-    + specialize (IHtyping_rule2 H3 H1 N' H8). inversion IHtyping_rule2; subst.
-      specialize (TRApp Δ Γ M N' T U H0_ H4). intro. assert (Δ; Γ ⊢ (Term.App M N') : U). { split; assumption. } trivial.
-    + inversion H; subst. inversion H4; subst. inversion H11; subst.
+  Admitted.
 Qed.
 
